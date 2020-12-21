@@ -9,6 +9,7 @@
  * @flow
  */
 
+import { startAssertion, startAttestation, supportsWebauthn } from '@simplewebauthn/browser';
 import AnonymousUtils from './AnonymousUtils';
 import CoreManager from './CoreManager';
 import isRevocableSession from './isRevocableSession';
@@ -142,6 +143,61 @@ class ParseUser extends ParseObject {
         });
       });
     }
+  }
+
+  /**
+   * Check if the navigator support webauthn https://webauthn.guide/
+   *
+   * @returns {boolean} return true if navigator support Webauthn
+   */
+  supportWebauthn() {
+    return supportsWebauthn();
+  }
+
+  /**
+   * Setup webauthn on the current user as new way to log in. User need to be logged in to setup webauthn.
+   *
+   * @returns {boolean}
+   */
+  async setupWebauthn(): Promise<boolean> {
+    if (!this.isCurrent())
+      throw new Error('Webauthn is only configurable with current logged user.');
+
+    if (!this.supportWebauthn()) throw new Error('Webauthn is not supported on current navigator.');
+
+    const challenge = await this.challenge({ challengeData: { webauthn: true } });
+    const webauthnOptions =
+      challenge && challenge.challengeData && challenge.challengeData.webauthn;
+    if (!webauthnOptions) throw new Error('Invalid Webauthn options returned by the server.');
+
+    const attestation = await startAttestation(webauthnOptions.options);
+    const controller = CoreManager.getUserController();
+    await controller.linkWith(
+      this,
+      { webauthn: { signedChallenge: webauthnOptions.signedChallenge, attestation } },
+      { sessionToken: this.getSessionToken() }
+    );
+    return true;
+  }
+
+  /**
+   * Login with webauthn system if configured on the user
+   *
+   * @static
+   * @returns {Promise}
+   */
+  static async logInWithWebauthn(): Promise<ParseUser> {
+    if (!supportsWebauthn()) throw new Error('Webauthn is not supported on this navigator.');
+    const challenge = this.challenge({ challengeData: { webauthn: true } });
+    const webauthnOptions =
+      challenge && challenge.challengeData && challenge.challengeData.webauthn;
+    if (!webauthnOptions) throw new Error('Invalid Webauthn options returned by the server.');
+    const assertion = await startAssertion(webauthnOptions.options);
+    const user = new this();
+    return user.linkWith('webauthn', {
+      assertion,
+      signedChallenge: webauthnOptions.signedChallenge,
+    });
   }
 
   /**
@@ -786,15 +842,19 @@ class ParseUser extends ParseObject {
    * Ask Parse server for an auth challenge (ex: WebAuthn login/signup)
    *
    * @param data
+   * @param saveOpts
    * @static
    * @returns {Promise}
    */
-  static challenge(data: {
-    authData?: AuthData,
-    username?: string,
-    password?: string,
-    challengeData: any,
-  }): Promise<{ challengeData: any }> {
+  static challenge(
+    data: {
+      authData?: AuthData,
+      username?: string,
+      password?: string,
+      challengeData: any,
+    },
+    saveOpts?: FullOptions
+  ): Promise<{ challengeData: any }> {
     if (!data.challengeData) {
       return Promise.reject(
         new ParseError(ParseError.OTHER_CAUSE, 'challengeData is required for the challenge.')
@@ -805,7 +865,26 @@ class ParseUser extends ParseObject {
         new ParseError(ParseError.OTHER_CAUSE, 'Running challenge via username require password.')
       );
     }
-    return CoreManager.getUserController().challenge(data);
+    return CoreManager.getUserController().challenge(data, saveOpts);
+  }
+
+  /**
+   * Ask Parse server for an auth challenge with current user
+   *
+   * @param data
+   * @param saveOpts
+   * @returns {Promise}
+   */
+  challenge(
+    data: {
+      authData?: AuthData,
+      username?: string,
+      password?: string,
+      challengeData: any,
+    },
+    saveOpts?: FullOptions
+  ): Promise<{ challengeData: any }> {
+    return ParseUser.challenge(data, saveOpts || { sessionToken: this.getSessionToken() });
   }
 
   /**
@@ -1179,8 +1258,8 @@ const DefaultController = {
     });
   },
 
-  challenge(data: any): Promise<{ challengeData: any }> {
-    return CoreManager.getRESTController().request('POST', 'challenge', data);
+  challenge(data: any, options: RequestOptions): Promise<{ challengeData: any }> {
+    return CoreManager.getRESTController().request('POST', 'challenge', data, options);
   },
 
   become(user: ParseUser, options: RequestOptions): Promise<ParseUser> {

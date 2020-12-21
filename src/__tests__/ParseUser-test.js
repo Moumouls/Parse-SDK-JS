@@ -1,4 +1,7 @@
 /**
+ * @jest-environment node
+ */
+/**
  * Copyright (c) 2015-present, Parse, LLC.
  * All rights reserved.
  *
@@ -1882,7 +1885,7 @@ describe('ParseUser', () => {
     expect(user.test).toBe(true);
   });
 
-  it('should return challenge', async () => {
+  it('should return challenge from static method', async () => {
     ParseUser.enableUnsafeCurrentUser();
     ParseUser._clearCache();
     CoreManager.setRESTController({
@@ -1925,5 +1928,48 @@ describe('ParseUser', () => {
     });
 
     expect(res.challengeData).toEqual({ test: { token: true } });
+  });
+
+  it('should return challenge with current user', async () => {
+    ParseUser.enableUnsafeCurrentUser();
+    ParseUser._clearCache();
+    CoreManager.setRESTController({
+      request(method, path, body, options) {
+        expect(options).toEqual({ sessionToken: '123abc' });
+        expect(method).toBe('POST');
+        expect(path).toBe('challenge');
+        expect(body.username).toBe('username');
+        expect(body.password).toBe('password');
+        expect(body.challengeData).toEqual({ test: { data: true } });
+
+        return Promise.resolve(
+          {
+            challengeData: { test: { token: true } },
+          },
+          200
+        );
+      },
+      ajax() {},
+    });
+
+    const user = ParseObject.fromJSON({
+      className: '_User',
+      username: 'user12',
+      email: 'user12@parse.com',
+      sessionToken: '123abc',
+    });
+
+    const res = await user.challenge({
+      username: 'username',
+      password: 'password',
+      challengeData: { test: { data: true } },
+    });
+
+    expect(res.challengeData).toEqual({ test: { token: true } });
+  });
+
+  describe('Webauthn', () => {
+    it.todo('should setup webauthn');
+    it.todo('should log in with webauthn');
   });
 });
